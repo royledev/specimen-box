@@ -1,0 +1,5 @@
+{
+  "API_BASE_URL": "https://<本番ドメイン>",
+  "APP_API_KEY": "",
+  "NOTIFY_TEST_MODE": "false"
+}

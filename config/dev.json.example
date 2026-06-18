@@ -1,0 +1,5 @@
+{
+  "API_BASE_URL": "http://<母艦のLAN IP>:8787",
+  "APP_API_KEY": "",
+  "NOTIFY_TEST_MODE": "true"
+}

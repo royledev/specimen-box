@@ -1,0 +1,84 @@
+{
+  "appPolicies" : {
+    "eula" : "",
+    "policies" : [
+      {
+        "locale" : "en_US",
+        "policyText" : "",
+        "policyURL" : ""
+      }
+    ]
+  },
+  "identifier" : "9A785DE7",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "1.20",
+      "familyShareable" : false,
+      "internalID" : "00000001",
+      "localizations" : [
+        {
+          "description" : "この標本を1つ封印します",
+          "displayName" : "封印（1個）",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.royle.specimenbox.seal.single",
+      "referenceName" : "封印（1個）",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "5.00",
+      "familyShareable" : false,
+      "internalID" : "00000002",
+      "localizations" : [
+        {
+          "description" : "封印クレジットを5つまとめて獲得",
+          "displayName" : "封印パック（5個）",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.royle.specimenbox.seal.pack5",
+      "referenceName" : "封印パック（5個）",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "9.99",
+      "familyShareable" : false,
+      "internalID" : "00000003",
+      "localizations" : [
+        {
+          "description" : "以後すべての標本を封印し放題",
+          "displayName" : "封印アンロック",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.royle.specimenbox.seal.unlock",
+      "referenceName" : "封印アンロック",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_askToBuyEnabled" : false,
+    "_billingGracePeriodEnabled" : false,
+    "_billingIssuesEnabled" : false,
+    "_disableDialogs" : false,
+    "_failTransactionsEnabled" : false,
+    "_locale" : "ja",
+    "_renewalBillingIssuesEnabled" : false,
+    "_storefront" : "JPN",
+    "_storeKitErrors" : [
+
+    ],
+    "_timeRate" : 0
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 5,
+    "minor" : 0
+  }
+}
