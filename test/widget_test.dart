@@ -87,7 +87,7 @@ void main() {
     // ProviderScope.containerOf で specimenListProvider を直接操作し、
     // add() → ホーム画面の表示変化を widget レベルで検証する。
     //
-    // AnswerScreen の非同期 QuestionLoader が関与すると flakiness が上がるため、
+    // AnswerScreen の非同期な問い取得（サーバー）が関与すると flakiness が上がるため、
     // Notifier の add() を直接呼び出す形で「保存→ホーム反映」を検証する。
     // これは AnswerScreen._submit() が行う
     //   ref.read(specimenListProvider.notifier).add(specimen)

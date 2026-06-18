@@ -33,7 +33,6 @@ import 'package:specimen_box/data/repositories/settings_repository.dart';
 import 'package:specimen_box/data/repositories/specimen_repository.dart';
 import 'package:specimen_box/data/services/specimen_image_service.dart';
 import 'package:specimen_box/domain/purchase/seal_entitlement.dart';
-import 'package:specimen_box/domain/questions/daily_question.dart';
 import 'package:specimen_box/domain/questions/next_question_resolver.dart';
 import 'package:specimen_box/domain/specimen/specimen.dart'
     as domain show Specimen;
@@ -325,8 +324,8 @@ final specimenApiProvider = FutureProvider<SpecimenApi>((ref) async {
 
 /// 「次の問い」を解決するサービス（ADR-0013: 通知ごとに別のランダム問い）。
 ///
-/// 問いは**開くたびに新規取得**する（日替わり安定＝同日は同じ、は撤回）。サーバー取得＋
-/// recent 窓 push（直近重複回避）、オフライン時は recent を避けたローカル選択。
+/// 問いは**開くたびにサーバーから新規取得**する（日替わり安定＝同日は同じ、は撤回）。サーバー取得＋
+/// recent 窓 push（直近重複回避）。サーバー専用＝取得失敗時はローカルへフォールバックせず例外を伝播する。
 ///
 /// [FutureProvider] で結果をキャッシュすると「同じ問いが返り続ける」ため、毎回新規取得できる
 /// サービス（メソッド呼び出しごとに解決）として公開する。解決ロジックは `resolveNextQuestion`
@@ -354,12 +353,6 @@ class NextQuestionService {
         );
       },
       pushRecent: settings.pushRecentQuestionId,
-      localFallback: () async {
-        final salt = await _ref.read(userSaltProvider.future);
-        final candidates = await QuestionLoader.loadAll();
-        final recent = await settings.getRecentQuestionIds();
-        return pickFreshLocalQuestion(candidates, salt, recent);
-      },
     );
   }
 }

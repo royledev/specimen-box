@@ -1,20 +1,17 @@
-// resolveNextQuestion のユニットテスト（ADR-0013: 通知ごとに別のランダム問い）。
+// resolveNextQuestion のユニットテスト（ADR-0013: 通知ごとに別のランダム問い / サーバー専用）。
 //
 // - サーバー成功時はそれを返し、採用IDを recent に push する。
-// - サーバー失敗時はローカルフォールバックを返し、そのIDも recent に push する。
+// - サーバー失敗時は**例外をそのまま伝播**する（ローカルへフォールバックしない）。
 // - push された ID は「次の取得」で除外でき、連続で同じ問いが出ない構図を担保する。
 library;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:specimen_box/data/questions/question_loader.dart'
-    show QuestionData;
 import 'package:specimen_box/domain/questions/next_question_resolver.dart';
 
 void main() {
   group('resolveNextQuestion', () {
     test('サーバー成功: 取得した問いを返し、ID を recent に push する', () async {
       final pushed = <String>[];
-      var localCalled = false;
 
       final q = await resolveNextQuestion(
         fetchRemote: () async => const RemoteQuestionData(
@@ -24,10 +21,6 @@ void main() {
           condition: 'weekendOnly',
         ),
         pushRecent: (id) async => pushed.add(id),
-        localFallback: () async {
-          localCalled = true;
-          return _local('q-local-x');
-        },
       );
 
       expect(q.id, 'q-remote-1');
@@ -36,29 +29,23 @@ void main() {
       expect(q.condition, 'weekendOnly');
       expect(q.weight, 1.0); // weight はサーバー選定専用→表示既定 1.0。
       expect(pushed, ['q-remote-1']);
-      expect(localCalled, isFalse,
-          reason: 'サーバー成功時はローカルフォールバックを呼ばない');
     });
 
-    test('サーバー失敗: ローカルフォールバックを返し、その ID を recent に push する',
-        () async {
+    test('サーバー失敗: 例外をそのまま伝播する（フォールバックしない）', () async {
       final pushed = <String>[];
 
-      final q = await resolveNextQuestion(
-        fetchRemote: () async => throw Exception('offline'),
-        pushRecent: (id) async => pushed.add(id),
-        localFallback: () async => _local('q-local-7'),
+      await expectLater(
+        resolveNextQuestion(
+          fetchRemote: () async => throw Exception('offline'),
+          pushRecent: (id) async => pushed.add(id),
+        ),
+        throwsA(isA<Exception>()),
       );
-
-      expect(q.id, 'q-local-7');
-      expect(pushed, ['q-local-7'],
-          reason: 'オフライン選択も push して次回の重複を避ける');
+      expect(pushed, isEmpty,
+          reason: '取得に失敗したら問いを採用しないので push もしない');
     });
 
-    test('サーバー成功＋push 失敗: 取得した問いを捨てずに返す（フォールバックしない）',
-        () async {
-      var localCalled = false;
-
+    test('サーバー成功＋push 失敗: 取得した問いを捨てずに返す', () async {
       final q = await resolveNextQuestion(
         fetchRemote: () async => const RemoteQuestionData(
           id: 'q-remote-1',
@@ -67,16 +54,10 @@ void main() {
         ),
         // pushRecent（DB write 相当）が失敗するケース。
         pushRecent: (id) async => throw Exception('db write failed'),
-        localFallback: () async {
-          localCalled = true;
-          return _local('q-local-x');
-        },
       );
 
       expect(q.id, 'q-remote-1',
           reason: 'push 失敗はサーバー取得結果を捨てない（best-effort）');
-      expect(localCalled, isFalse,
-          reason: 'サーバー成功時は push が失敗してもフォールバックしない');
     });
 
     test('連続呼び出し: 直前の採用 ID が recent に積まれ、次の取得で除外できる',
@@ -93,12 +74,10 @@ void main() {
       final first = await resolveNextQuestion(
         fetchRemote: fetch,
         pushRecent: (id) async => recent.add(id),
-        localFallback: () async => _local('unused'),
       );
       final second = await resolveNextQuestion(
         fetchRemote: fetch,
         pushRecent: (id) async => recent.add(id),
-        localFallback: () async => _local('unused'),
       );
 
       expect(first.id, 'q-1');
@@ -107,6 +86,3 @@ void main() {
     });
   });
 }
-
-QuestionData _local(String id) =>
-    QuestionData(id: id, text: id, category: 'local', weight: 1.0, condition: null);

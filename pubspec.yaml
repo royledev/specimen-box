@@ -48,9 +48,6 @@ flutter:
   shaders:
     - shaders/excavation.frag
 
-  assets:
-    - assets/questions/
-
   fonts:
     - family: ZenMaruGothic
       fonts:
