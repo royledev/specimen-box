@@ -2,8 +2,9 @@
 //
 // T5: 回答送信後に DetailScreen(playReveal:true) へ pushReplacement されることを確認する。
 //
-// AnswerScreen は QuestionLoader.loadCandidates() でアセットを非同期ロードするため、
-// フルの widget テストは flutter_test のアセットバインディング経由で動作する。
+// AnswerScreen は nextQuestionServiceProvider 経由でサーバーから問いを取得する
+// （ADR-0013: サーバー専用）。本テストは specimenApiProvider を FakeSpecimenApi に
+// override して問い取得を決定論化する。
 // NavigatorObserver を使って pushReplacement 遷移先が DetailScreen であることを確認する。
 
 import 'package:drift/native.dart';
@@ -15,8 +16,10 @@ import 'package:specimen_box/data/db/app_database.dart';
 import 'package:specimen_box/data/repositories/specimen_repository.dart';
 import 'package:specimen_box/data/services/specimen_image_service.dart';
 import 'package:specimen_box/platform/api/fake_specimen_api.dart';
+import 'package:specimen_box/platform/api/specimen_api.dart';
 import 'package:specimen_box/platform/image_store/fake_image_downloader.dart';
 import 'package:specimen_box/platform/image_store/fake_image_store.dart';
+import 'package:specimen_box/platform/image_store/image_downloader.dart';
 import 'package:specimen_box/presentation/answer/answer_screen.dart';
 import 'package:specimen_box/presentation/detail/detail_screen.dart';
 import 'package:specimen_box/presentation/providers/providers.dart';
@@ -38,6 +41,14 @@ class _TestNavigatorObserver extends NavigatorObserver {
   void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
     lastReplacedRoute = newRoute;
   }
+}
+
+/// 画像バイトのダウンロードが必ず失敗する [ImageDownloader]（画像取得失敗の模擬）。
+/// acquire() は抽選成功後の DL 失敗を deferred として返すため、回答フローでは画像エラーになる。
+class _ThrowingImageDownloader implements ImageDownloader {
+  @override
+  Future<List<int>> download(String url) async =>
+      throw Exception('download failed (test)');
 }
 
 void main() {
@@ -77,6 +88,29 @@ void main() {
     ];
   };
 
+  // 画像取得が失敗する override（downloader が必ず例外を投げる＝deferred）。
+  // ignore: prefer_function_declarations_over_variables
+  final buildOverridesFailingImage = (AppDatabase db) {
+    final repo = SpecimenRepository(db.specimensDao);
+    return [
+      appDatabaseProvider.overrideWith((ref) {
+        ref.onDispose(db.close);
+        return db;
+      }),
+      specimenRepositoryProvider.overrideWithValue(repo),
+      userSaltProvider.overrideWith((ref) async => 'test-salt-answer'),
+      nowProvider.overrideWithValue(DateTime(2026, 6, 9, 12, 0, 0)),
+      specimenApiProvider.overrideWith((ref) async => FakeSpecimenApi()),
+      specimenImageServiceProvider.overrideWith(
+        (ref) async => SpecimenImageService(
+          api: FakeSpecimenApi(),
+          store: FakeImageStore(),
+          downloader: _ThrowingImageDownloader(),
+        ),
+      ),
+    ];
+  };
+
   // ---------------------------------------------------------------------------
   // T5: _submit() → pushReplacement → DetailScreen(playReveal:true) 遷移確認
   // ---------------------------------------------------------------------------
@@ -98,11 +132,10 @@ void main() {
         ),
       );
 
-      // QuestionLoader の非同期ロードと salt の取得を待つ。
-      // flutter_test の TestWidgetsFlutterBinding はアセットを提供する。
+      // サーバー（Fake）からの問い取得と salt の取得を待つ。
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 200));
-      // ローディングが終わるまで追加で待つ（QuestionLoader は assets を読む）。
+      // ローディングが終わるまで追加で待つ。
       await tester.pump(const Duration(milliseconds: 500));
 
       // ローディングが完了して TextField が表示されているか確認する。
@@ -154,6 +187,135 @@ void main() {
           (statefulElement.state as dynamic).revealController as AnimationController?;
       expect(controller, isNotNull,
           reason: 'playReveal=true が渡されたため revealController が非 null になっている');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 画像取得失敗: 回答を保存せず「画像の取得ができませんでした」を表示する
+  // ---------------------------------------------------------------------------
+  group('画像取得失敗', () {
+    testWidgets(
+        '画像取得が失敗したら回答を保存せず、画像エラー表示になり DetailScreen へ遷移しない',
+        (tester) async {
+      final db = testDb;
+      final observer = _TestNavigatorObserver();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: buildOverridesFailingImage(db),
+          child: MaterialApp(
+            navigatorObservers: [observer],
+            home: const AnswerScreen(),
+          ),
+        ),
+      );
+
+      // 問い取得（Fake）の完了を待つ。
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump(const Duration(milliseconds: 500));
+      if (find.byType(TextField).evaluate().isEmpty) {
+        await tester.pump(const Duration(seconds: 2));
+      }
+
+      await tester.enterText(find.byType(TextField), 'テストの回答');
+      await tester.pump();
+      await tester.tap(find.text('回答する'));
+
+      // 画像取得（DL 失敗）→ 保存せずエラー表示の非同期処理を待つ。
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump(const Duration(milliseconds: 500));
+
+      // 「画像の取得ができませんでした」が表示される。
+      expect(find.text('画像の取得ができませんでした'), findsOneWidget,
+          reason: '画像取得失敗時はエラー表示にする');
+      // DetailScreen へは遷移しない（pushReplacement されない）。
+      expect(observer.lastReplacedRoute, isNull,
+          reason: '画像取得失敗時は保存・遷移しない');
+      expect(find.byType(DetailScreen), findsNothing);
+
+      // 回答（標本）は保存されていない。
+      final saved = await SpecimenRepository(db.specimensDao).getAll();
+      expect(saved, isEmpty, reason: '画像取得失敗時は標本を保存しない');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // プール枯渇（全収集済み）: 案内メッセージを出し、記録すると保存して進む
+  // ---------------------------------------------------------------------------
+  group('画像プール枯渇', () {
+    // drawImage が exhausted を返す Fake API。
+    FakeSpecimenApi exhaustedApi() => FakeSpecimenApi(
+          image: const ImageDrawResult(image: null, exhausted: true),
+        );
+
+    // ignore: prefer_function_declarations_over_variables
+    final overridesExhausted = (AppDatabase db) {
+      final repo = SpecimenRepository(db.specimensDao);
+      return [
+        appDatabaseProvider.overrideWith((ref) {
+          ref.onDispose(db.close);
+          return db;
+        }),
+        specimenRepositoryProvider.overrideWithValue(repo),
+        userSaltProvider.overrideWith((ref) async => 'test-salt-answer'),
+        nowProvider.overrideWithValue(DateTime(2026, 6, 9, 12, 0, 0)),
+        specimenApiProvider.overrideWith((ref) async => FakeSpecimenApi()),
+        specimenImageServiceProvider.overrideWith(
+          (ref) async => SpecimenImageService(
+            api: exhaustedApi(),
+            store: FakeImageStore(),
+            downloader: FakeImageDownloader(),
+          ),
+        ),
+      ];
+    };
+
+    testWidgets('枯渇時は案内ダイアログを出し、「記録する」で画像なし保存して遷移する',
+        (tester) async {
+      final db = testDb;
+      final observer = _TestNavigatorObserver();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overridesExhausted(db),
+          child: MaterialApp(
+            navigatorObservers: [observer],
+            home: const AnswerScreen(),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump(const Duration(milliseconds: 500));
+      if (find.byType(TextField).evaluate().isEmpty) {
+        await tester.pump(const Duration(seconds: 2));
+      }
+
+      await tester.enterText(find.byType(TextField), 'テストの回答');
+      await tester.pump();
+      await tester.tap(find.text('回答する'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // 案内ダイアログが表示される。
+      expect(find.text('化石を集めきりました'), findsOneWidget,
+          reason: '枯渇時は案内メッセージを出す');
+
+      // 「記録する」で保存して進む。
+      await tester.tap(find.text('記録する'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(observer.lastReplacedRoute, isNotNull,
+          reason: '記録するで DetailScreen へ遷移する');
+      final saved = await SpecimenRepository(db.specimensDao).getAll();
+      expect(saved, hasLength(1), reason: '枯渇でも回答は記録される');
+      expect(saved.single.localPath, isNull,
+          reason: '枯渇時は画像なし（プレースホルダ）で保存');
     });
   });
 

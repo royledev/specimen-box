@@ -15,7 +15,8 @@ import 'package:specimen_box/presentation/theme/app_tokens.dart';
 
 /// 問い回答画面: 問い文表示 + 一行入力 + 「回答する」ボタン。
 ///
-/// 問いは開くたびに新規取得する（ADR-0013: 通知ごとに別のランダム問い）。
+/// 問いは開くたびにサーバーから新規取得する（ADR-0013: 通知ごとに別のランダム問い / サーバー専用）。
+/// 取得に失敗した場合はローカルへフォールバックせず、リトライ可能なエラー表示にする。
 /// [targetDate] は生成される標本の日付にのみ使う。null = 当日（[nowProvider]）。
 class AnswerScreen extends ConsumerStatefulWidget {
   const AnswerScreen({super.key, this.targetDate});
@@ -30,6 +31,12 @@ class _AnswerScreenState extends ConsumerState<AnswerScreen> {
   final TextEditingController _controller = TextEditingController();
   bool _loading = true;
   bool _submitting = false;
+
+  /// サーバーからの問い取得に失敗した状態（サーバー専用＝フォールバックしない）。
+  bool _error = false;
+
+  /// 画像取得に失敗した状態（回答を保存せずリトライ表示。枯渇＝全収集済みは除く）。
+  bool _imageError = false;
   QuestionData? _question;
   bool _surveyOptIn = false;
 
@@ -86,11 +93,78 @@ class _AnswerScreenState extends ConsumerState<AnswerScreen> {
         setState(() {
           _question = q;
           _loading = false;
+          _error = false;
         });
       }
     } catch (_) {
-      // 取得・フォールバックとも失敗: スピナーを表示し続ける（既存挙動）。
+      // サーバー専用＝ローカルへフォールバックしない。失敗はリトライ可能なエラー表示にする。
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = true;
+        });
+      }
     }
+  }
+
+  /// 問い取得エラー表示の「もう一度」からの再取得。
+  Future<void> _retryQuestion() async {
+    setState(() {
+      _loading = true;
+      _error = false;
+    });
+    await _initQuestion();
+  }
+
+  /// 画像取得エラー表示の「もう一度」からの再送信（入力済みの回答を保持したまま）。
+  Future<void> _retrySubmit() async {
+    setState(() => _imageError = false);
+    await _submit();
+  }
+
+  /// プール枯渇（化石を全収集済み）を知らせる案内ダイアログ。
+  /// 「記録する」で true（画像なし＝プレースホルダで回答を保存して進む）、「やめる」で false。
+  Future<bool?> _showExhaustedDialog() {
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.card,
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          '化石を集めきりました',
+          style: TextStyle(
+            color: AppColors.ink,
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1,
+          ),
+        ),
+        content: const Text(
+          'すべての化石を発掘しました。\n新しい化石は出ませんが、この回答は記録できます。',
+          style: TextStyle(
+            color: AppColors.inkSoft,
+            fontSize: 13,
+            height: 1.7,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('やめる',
+                style: TextStyle(color: AppColors.inkSoft, fontSize: 13)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('記録する',
+                style: TextStyle(
+                    color: AppColors.amber,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<AcquiredImage?> _acquireImage() async {
@@ -152,6 +226,24 @@ class _AnswerScreenState extends ConsumerState<AnswerScreen> {
     final acquired = await _acquireImage();
     if (!mounted) return;
 
+    // 画像取得の失敗（ネット無/サーバーエラー/DL失敗＝deferred、または例外で null）は
+    // 回答を保存せずエラー表示＋リトライにする（問い取得と同じ方針。ADR-0011 決定6 の
+    // deferred 保存＝後で再取得は回答フローでは行わない）。
+    // 枯渇（全収集済み・exhausted）は失敗ではないため、画像なし（プレースホルダ）で保存して進む。
+    final bool imageFailed =
+        acquired == null || (!acquired.isFetched && !acquired.exhausted);
+    if (imageFailed) {
+      setState(() => _imageError = true);
+      return;
+    }
+
+    // 枯渇（全収集済み・exhausted）は失敗ではない。新しい画像は出ないが、
+    // 案内メッセージを出したうえで、記録するなら画像なし（プレースホルダ）で保存して進む。
+    if (acquired.exhausted) {
+      final proceed = await _showExhaustedDialog();
+      if (!mounted || proceed != true) return;
+    }
+
     final now = ref.read(nowProvider);
     final specimen = Specimen(
       id: Specimen.generateId(),
@@ -160,10 +252,10 @@ class _AnswerScreenState extends ConsumerState<AnswerScreen> {
       questionText: _question!.text,
       date: date,
       createdAt: now,
-      imageId: acquired?.imageId,
-      localPath: acquired?.localPath,
-      imageRarity: acquired?.rarity,
-      name: acquired?.name,
+      imageId: acquired.imageId,
+      localPath: acquired.localPath,
+      imageRarity: acquired.rarity,
+      name: acquired.name,
     );
 
     await ref.read(specimenListProvider.notifier).add(specimen);
@@ -237,8 +329,8 @@ class _AnswerScreenState extends ConsumerState<AnswerScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      // 打ち止め時は確認なしでそのまま閉じてよい（問いを取得していない）。
-      canPop: _capped,
+      // 打ち止め・取得失敗時は確認なしでそのまま閉じてよい（問いを取得していない）。
+      canPop: _capped || _error,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
         final ok = await _confirmLeave();
@@ -267,7 +359,21 @@ class _AnswerScreenState extends ConsumerState<AnswerScreen> {
               )
             : _capped
                 ? _buildCapped(context)
-                : _buildContent(context),
+                : _error
+                    ? _buildErrorView(
+                        context,
+                        icon: '📡',
+                        title: '問いを取得できませんでした',
+                        onRetry: _retryQuestion,
+                      )
+                    : _imageError
+                        ? _buildErrorView(
+                            context,
+                            icon: '🖼',
+                            title: '画像の取得ができませんでした',
+                            onRetry: _retrySubmit,
+                          )
+                        : _buildContent(context),
       ),
     );
   }
@@ -305,6 +411,68 @@ class _AnswerScreenState extends ConsumerState<AnswerScreen> {
                 foregroundColor: AppColors.amber,
                 textStyle: const TextStyle(
                     fontSize: 14, fontWeight: FontWeight.w700, letterSpacing: 1),
+              ),
+              child: const Text('閉じる'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 取得失敗時の共通エラー表示（リトライ可能）。問い取得・画像取得の両方で使う。
+  Widget _buildErrorView(
+    BuildContext context, {
+    required String icon,
+    required String title,
+    required Future<void> Function() onRetry,
+  }) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 44),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(icon, style: const TextStyle(fontSize: 30)),
+            const SizedBox(height: 20),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.ink,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1,
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              '通信環境を確認して、もう一度お試しください。',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  color: AppColors.inkSoft, fontSize: 14, height: 1.8),
+            ),
+            const SizedBox(height: 28),
+            TextButton(
+              onPressed: onRetry,
+              style: TextButton.styleFrom(
+                backgroundColor: AppColors.coral,
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(28)),
+                textStyle: const TextStyle(
+                    fontSize: 14, fontWeight: FontWeight.w700, letterSpacing: 1),
+              ),
+              child: const Text('もう一度'),
+            ),
+            const SizedBox(height: 4),
+            TextButton(
+              onPressed: () => Navigator.maybePop(context),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.inkSoft,
+                textStyle: const TextStyle(fontSize: 13),
               ),
               child: const Text('閉じる'),
             ),
